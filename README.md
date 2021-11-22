@@ -15,5 +15,5 @@ NAMESPACE=<target-namespace> ./apply.sh
 ## Uninstall logs collector
 
 ```sh
-NAMESPACE=<target-namespace> ./apply.sh
+NAMESPACE=<target-namespace> ./delete.sh
 ```
