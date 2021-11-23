@@ -4,7 +4,7 @@ service:
       receivers:
       - filelog/containers
       exporters:
-      - otlp
+      - otlphttp
 
 receivers:
   filelog/containers:
@@ -44,7 +44,5 @@ receivers:
               to: $
 
 exporters:
-  otlp:
+  otlphttp:
     endpoint: http://otc-opentelemetry-collector.otc:4318
-    tls:
-      insecure: true
