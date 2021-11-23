@@ -3,3 +3,10 @@ agentCollector:
 
 standaloneCollector:
   enabled: true
+
+config:
+  service:
+    pipelines:
+      metrics: null
+      traces: null
+
