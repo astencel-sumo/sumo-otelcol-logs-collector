@@ -14,20 +14,95 @@ receivers:
     include_file_path: true
     include_file_name: false
     operators:
-      # Parse Docker format
-      - type: json_parser
-        id: parser-docker
-        output: extract_metadata_from_filepath
+
+      # parser-docker interprets the input string as JSON and moves the `time` field from the JSON to Timestamp field in the OTLP log record.
+      # Input Body (string): '{"log":"2001-02-03 04:05:06 loggerlog 1 first line\n","stream":"stdout","time":"2021-11-25T09:59:13.23887954Z"}'
+      # Output Body (JSON): { "log": "2001-02-03 04:05:06 loggerlog 1 first line\n", "stream": "stdout" }
+      # Input Timestamp: _empty_
+      # Output Timestamp: 2021-11-25 09:59:13.23887954 +0000 UTC
+      - id: parser-docker
+        type: json_parser
+        # output: join-multipart-entries
         timestamp:
           parse_from: time
           layout: '%Y-%m-%dT%H:%M:%S.%LZ'
-      # Extract metadata from file path
-      - type: regex_parser
-        id: extract_metadata_from_filepath
+
+      # This operator is currently disabled as it adds additional newlines - https://github.com/open-telemetry/opentelemetry-log-collection/issues/314
+      #
+      # # merge-split-lines stitches back together log lines split by Docker logging driver.
+      # Input Body (JSON): { "log": "2001-02-03 04:05:06 very very very lo", "stream": "stdout" }
+      # Input Body (JSON): { "log": "ng line that was split by the Docker logging driver\n", "stream": "stdout" }
+      # Output Body (JSON): { "log": "2001-02-03 04:05:06 very very very long line that was split by the Docker logging driver\n", "stream": "stdout" }
+      # - id: merge-split-lines
+      #   type: recombine
+      #   combine_field: log
+      #   is_last_entry: $$body.log matches "\n$"
+
+      # This operator is currently disabled due to the following issues:
+      # - Additional newlines being added between the merged logs: https://github.com/open-telemetry/opentelemetry-log-collection/issues/314
+      # - No flushing: https://github.com/open-telemetry/opentelemetry-log-collection/issues/306
+      #
+      # # merge-multiline-logs merges incoming log records into multiline logs.
+      # # Input Body (JSON): { "log": "2001-02-03 04:05:06 loggerlog 1 first line\n", "stream": "stdout" }
+      # # Input Body (JSON): { "log": "    loggerlog 1 second line\n", "stream": "stdout" }
+      # # Input Body (JSON): { "log": "    loggerlog 1 third line\n", "stream": "stdout" }
+      # # Output Body (JSON): { "log": "2001-02-03 04:05:06 loggerlog 1 first line\n    loggerlog 1 second line\n    loggerlog 1 third line\n", "stream": "stdout" }
+      # - id: merge-multiline-logs
+      #   type: recombine
+      #   combine_field: log
+      #   is_first_entry: $$body.log matches "^[^\\s]"
+
+      # extract-metadata-from-filepath extracts data from the `file.path` Attribute into the Body, removing the `file.path` attribute.
+      # Input Attributes:
+      # - file.path: '/var/log/pods/default_logger-multiline-4nvg4_aed49747-b541-4a07-8663-f7e1febc47d5/loggercontainer/0.log'
+      # Output Attributes: _none_
+      # Input Body (JSON): {
+      #   "log": "2001-02-03 04:05:06 loggerlog 1 first line\n",
+      #   "stream": "stdout"
+      # }
+      # Output Body (JSON): {
+      #   "container_name": "loggercontainer",
+      #   "log": "2001-02-03 04:05:06 loggerlog 1 first line\n",
+      #   "namespace": "default",
+      #   "pod_name": "logger-multiline-4nvg4",
+      #   "run_id": "0",
+      #   "stream": "stdout",
+      #   "uid": "aed49747-b541-4a07-8663-f7e1febc47d5"
+      # }
+      - id: extract-metadata-from-filepath
+        type: regex_parser
         regex: '^.*\/(?P<namespace>[^_]+)_(?P<pod_name>[^_]+)_(?P<uid>[a-f0-9\-]+)\/(?P<container_name>[^\._]+)\/(?P<run_id>\d+)\.log$'
         parse_from: $$attributes["file.path"]
-      # Move out attributes to Attributes
-      - type: metadata
+
+      # copy-attributes copies attributes from Body to Attributes.
+      # Input Body (JSON): {
+      #   "container_name": "loggercontainer",
+      #   "log": "2001-02-03 04:05:06 loggerlog 1 first line\n",
+      #   "namespace": "default",
+      #   "pod_name": "logger-multiline-4nvg4",
+      #   "run_id": "0",
+      #   "stream": "stdout",
+      #   "uid": "aed49747-b541-4a07-8663-f7e1febc47d5"
+      # }
+      # Output Body (JSON): {
+      #   "container_name": "loggercontainer",
+      #   "log": "2001-02-03 04:05:06 loggerlog 1 first line\n",
+      #   "namespace": "default",
+      #   "pod_name": "logger-multiline-4nvg4",
+      #   "run_id": "0",
+      #   "stream": "stdout",
+      #   "uid": "aed49747-b541-4a07-8663-f7e1febc47d5"
+      # }
+      # Input Attributes: _none_
+      # Output Attributes:
+      # - k8s.container.name: "loggercontainer"
+      # - k8s.namespace.name: "default"
+      # - k8s.pod.name: "logger-multiline-4nvg4"
+      # - k8s.pod.uid: "aed49747-b541-4a07-8663-f7e1febc47d5"
+      # - run_id: "0"
+      # - stream: "stdout"
+      - id: copy-attributes
+        type: metadata
         attributes:
           stream: 'EXPR($.stream)'
           k8s.container.name: 'EXPR($.container_name)'
@@ -35,9 +110,36 @@ receivers:
           k8s.pod.name: 'EXPR($.pod_name)'
           run_id: 'EXPR($.run_id)'
           k8s.pod.uid: 'EXPR($.uid)'
-      # Clean up log body
-      - type: restructure
-        id: clean-up-log-body
+
+      # clean-up-log-body takes the values of the `log` field in the JSON Body and puts the value as the sole string value of Body.
+      #
+      # Input Body (JSON): {
+      #   "container_name": "",
+      #   "log": "2001-02-03 04:05:06 loggerlog 1 first line\n",
+      #   "namespace": "default",
+      #   "pod_name": "logger-multiline-4nvg4",
+      #   "run_id": "0",
+      #   "stream": "stdout",
+      #   "uid": "aed49747-b541-4a07-8663-f7e1febc47d5"
+      # }
+      # Output Body (string): "2001-02-03 04:05:06 loggerlog 1 first line\n"
+      #
+      # Input Attributes:
+      # - k8s.container.name: "loggercontainer"
+      # - k8s.namespace.name: "default"
+      # - k8s.pod.name: "logger-multiline-4nvg4"
+      # - k8s.pod.uid: "aed49747-b541-4a07-8663-f7e1febc47d5"
+      # - run_id: "0"
+      # - stream: "stdout"
+      # Output Attributes:
+      # - k8s.container.name: "loggercontainer"
+      # - k8s.namespace.name: "default"
+      # - k8s.pod.name: "logger-multiline-4nvg4"
+      # - k8s.pod.uid: "aed49747-b541-4a07-8663-f7e1febc47d5"
+      # - run_id: "0"
+      # - stream: "stdout"
+      - id: clean-up-log-body
+        type: restructure
         ops:
           - move:
               from: log
