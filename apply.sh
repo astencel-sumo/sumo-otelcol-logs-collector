@@ -3,4 +3,5 @@
 set -exuo pipefail
 
 kubectl create configmap sumo-otelcol-logs-collector-configmap --from-file=./otelcol-config.yaml --dry-run=client -o yaml | kubectl --namespace ${NAMESPACE} apply -f -
+kubectl --namespace ${NAMESPACE} delete -f ./sumo-otelcol-logs-collector.yaml
 kubectl --namespace ${NAMESPACE} apply -f ./sumo-otelcol-logs-collector.yaml
